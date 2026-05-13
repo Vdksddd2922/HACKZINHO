@@ -115,10 +115,46 @@ local silentAimEnabled = false
 local espEnabled = false
 local currentFov = 70
 
+-- TARGETS LOGIC (PLAYERS + NPCs)
+local cachedTargets = {}
+local function updateTargetsCache()
+    local newTargets = {}
+    
+    -- Jogadores
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= player and p.Character and p.Character:FindFirstChild("Head") and p.Character:FindFirstChild("Humanoid") and p.Character.Humanoid.Health > 0 then
+            if p.Team and player.Team and p.Team == player.Team then continue end
+            table.insert(newTargets, p.Character)
+        end
+    end
+
+    -- NPCs (PVE)
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Humanoid") and obj.Parent and obj.Parent:IsA("Model") and obj.Health > 0 then
+            local char = obj.Parent
+            if char ~= player.Character and not Players:GetPlayerFromCharacter(char) then
+                if char:FindFirstChild("Head") then
+                    table.insert(newTargets, char)
+                end
+            end
+        end
+    end
+    
+    cachedTargets = newTargets
+end
+
+task.spawn(function()
+    while task.wait(1) do
+        updateTargetsCache()
+    end
+end)
+
 -- ESP LOGIC
 local ESP_Boxes = {}
 
-local function createEspBox(p)
+local function createEspBox(char)
+    if ESP_Boxes[char] then return end
+    
     local Box = Drawing.new("Square")
     Box.Visible = false
     Box.Color = Color3.fromRGB(255, 255, 255)
@@ -144,88 +180,86 @@ local function createEspBox(p)
     HealthBarOutline.Thickness = 4
     HealthBarOutline.Color = Color3.fromRGB(0, 0, 0)
 
-    ESP_Boxes[p] = {Box = Box, Name = Name, HealthBar = HealthBar, HealthBarOutline = HealthBarOutline}
+    ESP_Boxes[char] = {Box = Box, Name = Name, HealthBar = HealthBar, HealthBarOutline = HealthBarOutline}
 end
 
-local function removeEspBox(p)
-    if ESP_Boxes[p] then
-        ESP_Boxes[p].Box:Remove()
-        ESP_Boxes[p].Name:Remove()
-        ESP_Boxes[p].HealthBar:Remove()
-        ESP_Boxes[p].HealthBarOutline:Remove()
-        ESP_Boxes[p] = nil
+local function removeEspBox(char)
+    if ESP_Boxes[char] then
+        ESP_Boxes[char].Box:Remove()
+        ESP_Boxes[char].Name:Remove()
+        ESP_Boxes[char].HealthBar:Remove()
+        ESP_Boxes[char].HealthBarOutline:Remove()
+        ESP_Boxes[char] = nil
     end
 end
-
-for _, p in pairs(Players:GetPlayers()) do
-    if p ~= player then
-        createEspBox(p)
-    end
-end
-
-Players.PlayerAdded:Connect(function(p)
-    if p ~= player then
-        createEspBox(p)
-    end
-end)
-
-Players.PlayerRemoving:Connect(function(p)
-    removeEspBox(p)
-end)
 
 RunService.RenderStepped:Connect(function()
-    for p, items in pairs(ESP_Boxes) do
-        if espEnabled and p.Character and p.Character:FindFirstChild("HumanoidRootPart") and p.Character:FindFirstChild("Humanoid") and p.Character.Humanoid.Health > 0 then
-            -- Team Check (se o jogo usar times do Roblox)
-            if p.Team and player.Team and p.Team == player.Team then
-                items.Box.Visible = false
-                items.Name.Visible = false
-                items.HealthBar.Visible = false
-                items.HealthBarOutline.Visible = false
-                continue
+    -- Limpa ESP de quem morreu ou sumiu
+    for char, items in pairs(ESP_Boxes) do
+        local found = false
+        for _, t in ipairs(cachedTargets) do
+            if t == char then
+                found = true
+                break
             end
-            
-            local hrp = p.Character.HumanoidRootPart
-            local head = p.Character:FindFirstChild("Head")
-            if not head then head = hrp end
-            
-            local vector, onScreen = camera:WorldToViewportPoint(hrp.Position)
-            local headVector, _ = camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
-            local legVector, _ = camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
+        end
+        if not found or not char:FindFirstChild("Humanoid") or char.Humanoid.Health <= 0 then
+            removeEspBox(char)
+        end
+    end
 
-            if onScreen then
-                local boxHeight = legVector.Y - headVector.Y
-                local boxWidth = boxHeight / 2
+    if espEnabled then
+        for _, char in ipairs(cachedTargets) do
+            if char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 then
+                createEspBox(char)
+                local items = ESP_Boxes[char]
                 
-                -- Cor Baseada na Vida
-                local healthPercentage = p.Character.Humanoid.Health / p.Character.Humanoid.MaxHealth
-                local color = Color3.fromRGB(255 - (healthPercentage * 255), healthPercentage * 255, 0)
+                local hrp = char.HumanoidRootPart
+                local head = char:FindFirstChild("Head") or hrp
+                
+                local vector, onScreen = camera:WorldToViewportPoint(hrp.Position)
+                local headVector, _ = camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+                local legVector, _ = camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
 
-                items.Box.Size = Vector2.new(boxWidth, boxHeight)
-                items.Box.Position = Vector2.new(vector.X - boxWidth / 2, headVector.Y)
-                items.Box.Color = color
-                items.Box.Visible = true
+                if onScreen then
+                    local boxHeight = legVector.Y - headVector.Y
+                    local boxWidth = boxHeight / 2
+                    
+                    local healthPercentage = char.Humanoid.Health / char.Humanoid.MaxHealth
+                    local color = Color3.fromRGB(255 - (healthPercentage * 255), healthPercentage * 255, 0)
 
-                items.Name.Text = string.format("%s [%d]", p.Name, math.floor((hrp.Position - player.Character.HumanoidRootPart.Position).Magnitude))
-                items.Name.Position = Vector2.new(vector.X, headVector.Y - 20)
-                items.Name.Color = color
-                items.Name.Visible = true
-                
-                items.HealthBarOutline.From = Vector2.new(vector.X - boxWidth / 2 - 5, headVector.Y)
-                items.HealthBarOutline.To = Vector2.new(vector.X - boxWidth / 2 - 5, legVector.Y)
-                items.HealthBarOutline.Visible = true
-                
-                items.HealthBar.From = Vector2.new(vector.X - boxWidth / 2 - 5, legVector.Y - (boxHeight * healthPercentage))
-                items.HealthBar.To = Vector2.new(vector.X - boxWidth / 2 - 5, legVector.Y)
-                items.HealthBar.Color = Color3.fromRGB(255 - (healthPercentage * 255), healthPercentage * 255, 0)
-                items.HealthBar.Visible = true
-            else
-                items.Box.Visible = false
-                items.Name.Visible = false
-                items.HealthBar.Visible = false
-                items.HealthBarOutline.Visible = false
+                    items.Box.Size = Vector2.new(boxWidth, boxHeight)
+                    items.Box.Position = Vector2.new(vector.X - boxWidth / 2, headVector.Y)
+                    items.Box.Color = color
+                    items.Box.Visible = true
+
+                    local distance = 0
+                    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                        distance = math.floor((hrp.Position - player.Character.HumanoidRootPart.Position).Magnitude)
+                    end
+                    items.Name.Text = string.format("%s [%d]", char.Name, distance)
+                    items.Name.Position = Vector2.new(vector.X, headVector.Y - 20)
+                    items.Name.Color = color
+                    items.Name.Visible = true
+                    
+                    items.HealthBarOutline.From = Vector2.new(vector.X - boxWidth / 2 - 5, headVector.Y)
+                    items.HealthBarOutline.To = Vector2.new(vector.X - boxWidth / 2 - 5, legVector.Y)
+                    items.HealthBarOutline.Visible = true
+                    
+                    items.HealthBar.From = Vector2.new(vector.X - boxWidth / 2 - 5, legVector.Y - (boxHeight * healthPercentage))
+                    items.HealthBar.To = Vector2.new(vector.X - boxWidth / 2 - 5, legVector.Y)
+                    items.HealthBar.Color = color
+                    items.HealthBar.Visible = true
+                else
+                    items.Box.Visible = false
+                    items.Name.Visible = false
+                    items.HealthBar.Visible = false
+                    items.HealthBarOutline.Visible = false
+                end
             end
-        else
+        end
+    else
+        for char, items in pairs(ESP_Boxes) do
             items.Box.Visible = false
             items.Name.Visible = false
             items.HealthBar.Visible = false
@@ -268,27 +302,25 @@ local function isVisible(targetPart)
     return rayResult and rayResult.Instance and rayResult.Instance:IsDescendantOf(targetPart.Parent) or not rayResult
 end
 
-local function getClosestPlayer()
-    local closestPlayer = nil
+local function getClosestTarget()
+    local closestTarget = nil
     local shortestDistance = fovCircle.Radius
 
-    for _, p in pairs(Players:GetPlayers()) do
-        if p ~= player and p.Character and p.Character:FindFirstChild("Head") and p.Character:FindFirstChild("Humanoid") and p.Character.Humanoid.Health > 0 then
-            if p.Team and player.Team and p.Team == player.Team then continue end
-            
-            local pos, onScreen = camera:WorldToViewportPoint(p.Character.Head.Position)
+    for _, char in ipairs(cachedTargets) do
+        if char and char:FindFirstChild("Head") and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 then
+            local pos, onScreen = camera:WorldToViewportPoint(char.Head.Position)
             if onScreen then
                 local magnitude = (Vector2.new(pos.X, pos.Y) - Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)).Magnitude
                 if magnitude < shortestDistance then
-                    if isVisible(p.Character.Head) then
-                        closestPlayer = p
+                    if isVisible(char.Head) then
+                        closestTarget = char
                         shortestDistance = magnitude
                     end
                 end
             end
         end
     end
-    return closestPlayer
+    return closestTarget
 end
 
 local oldNamecall
@@ -298,15 +330,15 @@ oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
 
     if silentAimEnabled and not checkcaller() then
         if method == "Raycast" then
-            local closestPlayer = getClosestPlayer()
-            if closestPlayer and closestPlayer.Character and closestPlayer.Character:FindFirstChild("Head") then
-                args[2] = (closestPlayer.Character.Head.Position - args[1]).Unit * 1000
+            local closestTarget = getClosestTarget()
+            if closestTarget and closestTarget:FindFirstChild("Head") then
+                args[2] = (closestTarget.Head.Position - args[1]).Unit * 1000
             end
         elseif method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRayWithWhitelist" or method == "FindPartOnRay" then
-            local closestPlayer = getClosestPlayer()
-            if closestPlayer and closestPlayer.Character and closestPlayer.Character:FindFirstChild("Head") then
+            local closestTarget = getClosestTarget()
+            if closestTarget and closestTarget:FindFirstChild("Head") then
                 local origin = args[1].Origin
-                args[1] = Ray.new(origin, (closestPlayer.Character.Head.Position - origin).Unit * 1000)
+                args[1] = Ray.new(origin, (closestTarget.Head.Position - origin).Unit * 1000)
             end
         end
     end
@@ -325,8 +357,8 @@ silentAimButton.MouseButton1Click:Connect(function()
     end
 end)
 
-local bodyVelocity
-local bodyGyro
+local flyConnection
+local noclipConnection
 
 local keys = {W = false, A = false, S = false, D = false, Q = false, E = false}
 
@@ -346,60 +378,35 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 local function startFly()
-    local character = player.Character or player.CharacterAdded:Wait()
-    local hrp = character:WaitForChild("HumanoidRootPart")
-
-    bodyVelocity = Instance.new("BodyVelocity")
-    bodyVelocity.MaxForce = Vector3.new(1e9, 1e9, 1e9)
-    bodyVelocity.Velocity = Vector3.zero
-    bodyVelocity.Parent = hrp
-
-    bodyGyro = Instance.new("BodyGyro")
-    bodyGyro.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
-    bodyGyro.CFrame = hrp.CFrame
-    bodyGyro.Parent = hrp
-
     flying = true
-
-    RunService.RenderStepped:Connect(function()
-        if not flying then return end
-
+    flyConnection = RunService.Heartbeat:Connect(function(dt)
+        if not flying or not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return end
+        local hrp = player.Character.HumanoidRootPart
         local cam = workspace.CurrentCamera
         local moveDirection = Vector3.zero
 
-        if keys.W then
-            moveDirection += cam.CFrame.LookVector
-        end
-        if keys.S then
-            moveDirection -= cam.CFrame.LookVector
-        end
-        if keys.A then
-            moveDirection -= cam.CFrame.RightVector
-        end
-        if keys.D then
-            moveDirection += cam.CFrame.RightVector
-        end
-        if keys.E then
-            moveDirection += Vector3.new(0, 1, 0)
-        end
-        if keys.Q then
-            moveDirection -= Vector3.new(0, 1, 0)
-        end
+        if keys.W then moveDirection += cam.CFrame.LookVector end
+        if keys.S then moveDirection -= cam.CFrame.LookVector end
+        if keys.A then moveDirection -= cam.CFrame.RightVector end
+        if keys.D then moveDirection += cam.CFrame.RightVector end
+        if keys.E then moveDirection += Vector3.new(0, 1, 0) end
+        if keys.Q then moveDirection -= Vector3.new(0, 1, 0) end
 
-        bodyVelocity.Velocity = moveDirection * flySpeed
-        bodyGyro.CFrame = cam.CFrame
+        if moveDirection.Magnitude > 0 then
+            hrp.Velocity = moveDirection.Unit * flySpeed
+        else
+            hrp.Velocity = Vector3.zero
+        end
+        
+        hrp.CFrame = CFrame.new(hrp.Position, hrp.Position + cam.CFrame.LookVector)
     end)
 end
 
 local function stopFly()
     flying = false
-    if bodyVelocity then
-        bodyVelocity:Destroy()
-        bodyVelocity = nil
-    end
-    if bodyGyro then
-        bodyGyro:Destroy()
-        bodyGyro = nil
+    if flyConnection then
+        flyConnection:Disconnect()
+        flyConnection = nil
     end
 end
 
@@ -418,20 +425,23 @@ noclipButton.MouseButton1Click:Connect(function()
     noclipEnabled = not noclipEnabled
     if noclipEnabled then
         noclipButton.Text = "NoClip: ON"
+        if not noclipConnection then
+            noclipConnection = RunService.Stepped:Connect(function()
+                local character = player.Character
+                if character then
+                    for _, part in pairs(character:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            part.CanCollide = false
+                        end
+                    end
+                end
+            end)
+        end
     else
         noclipButton.Text = "NoClip: OFF"
-    end
-end)
-
-RunService.Stepped:Connect(function()
-    if noclipEnabled then
-        local character = player.Character
-        if character then
-            for _, part in pairs(character:GetDescendants()) do
-                if part:IsA("BasePart") and part.CanCollide then
-                    part.CanCollide = false
-                end
-            end
+        if noclipConnection then
+            noclipConnection:Disconnect()
+            noclipConnection = nil
         end
     end
 end)
@@ -452,33 +462,27 @@ fovButton.MouseButton1Click:Connect(function()
     fovCircle.Radius = currentFov * 2 
 end)
 
-local function setLoadingState(pvpText, pveText)
-    pvpButton.AutoButtonColor = false
-    pveButton.AutoButtonColor = false
-    pvpButton.Text = pvpText
-    pveButton.Text = pveText
-    if fovCircle then
-        fovCircle:Remove()
+local function onModeSelected(mode)
+    pvpButton.Visible = false
+    pveButton.Visible = false
+    
+    if mode == "PVE" then
+        title.Text = "PVE Mode Loaded"
+        loadPve()
+    else
+        title.Text = "PVP Mode Loaded"
+        loadPvp()
     end
-    -- Limpa tudo na GUI quando o script final entra, para não poluir
-    for _, item in pairs(ESP_Boxes) do
-        item.Box:Remove()
-        item.Name:Remove()
-        item.HealthBar:Remove()
-        item.HealthBarOutline:Remove()
-    end
-    screenGui:Destroy()
+    
+    -- Ajustar posições para a interface ficar compacta e manter os botões
+    flyButton.Position = UDim2.new(0.1, 0, 0, 60)
+    noclipButton.Position = UDim2.new(0.1, 0, 0, 115)
+    fovButton.Position = UDim2.new(0.1, 0, 0, 170)
+    silentAimButton.Position = UDim2.new(0.1, 0, 0, 225)
+    espButton.Position = UDim2.new(0.1, 0, 0, 280)
+    
+    frame.Size = UDim2.new(0, 320, 0, 340)
 end
 
-local function onPvpSelected()
-    setLoadingState("Loading...", "Please wait...")
-    loadPvp()
-end
-
-local function onPveSelected()
-    setLoadingState("Please wait...", "Loading...")
-    loadPve()
-end
-
-pvpButton.MouseButton1Click:Connect(onPvpSelected)
-pveButton.MouseButton1Click:Connect(onPveSelected)
+pvpButton.MouseButton1Click:Connect(function() onModeSelected("PVP") end)
+pveButton.MouseButton1Click:Connect(function() onModeSelected("PVE") end)
