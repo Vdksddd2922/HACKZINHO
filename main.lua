@@ -38,8 +38,8 @@ screenGui.ResetOnSpawn = false
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 320, 0, 395)
-frame.Position = UDim2.new(0.5, -160, 0.5, -197)
+frame.Size = UDim2.new(0, 320, 0, 450)
+frame.Position = UDim2.new(0.5, -160, 0.5, -225)
 frame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 frame.BorderSizePixel = 0
 frame.Active = true
@@ -84,14 +84,80 @@ local pveButton = createButton("PVEButton", "PVE", Color3.fromRGB(60, 200, 60), 
 local flyButton = createButton("FlyButton", "Fly: OFF", Color3.fromRGB(70, 70, 200), 170)
 local noclipButton = createButton("NoClipButton", "NoClip: OFF", Color3.fromRGB(150, 50, 150), 225)
 local fovButton = createButton("FOVButton", "FOV: 70", Color3.fromRGB(200, 140, 50), 280)
+local silentAimButton = createButton("SilentAimButton", "Silent Aim: OFF", Color3.fromRGB(200, 50, 50), 335)
 
 local flyEnabled = false
 local flying = false
 local flySpeed = 60
 local noclipEnabled = false
+local silentAimEnabled = false
+local currentFov = 70
 
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+
+-- SILENT AIM & FOV CIRCLE LOGIC
+local fovCircle = Drawing.new("Circle")
+fovCircle.Color = Color3.fromRGB(255, 255, 255)
+fovCircle.Thickness = 1
+fovCircle.Filled = false
+fovCircle.Transparency = 1
+fovCircle.Visible = false
+fovCircle.Radius = currentFov * 2 -- Raio inicial atrelado ao FOV
+fovCircle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+
+local function getClosestPlayer()
+    local closestPlayer = nil
+    local shortestDistance = fovCircle.Radius
+
+    for _, p in pairs(game:GetService("Players"):GetPlayers()) do
+        if p ~= player and p.Character and p.Character:FindFirstChild("Head") and p.Character:FindFirstChild("Humanoid") and p.Character.Humanoid.Health > 0 then
+            local pos, onScreen = camera:WorldToViewportPoint(p.Character.Head.Position)
+            if onScreen then
+                local magnitude = (Vector2.new(pos.X, pos.Y) - Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)).Magnitude
+                if magnitude < shortestDistance then
+                    closestPlayer = p
+                    shortestDistance = magnitude
+                end
+            end
+        end
+    end
+    return closestPlayer
+end
+
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+    local method = getnamecallmethod()
+    local args = {...}
+
+    if silentAimEnabled and not checkcaller() then
+        if method == "Raycast" then
+            local closestPlayer = getClosestPlayer()
+            if closestPlayer and closestPlayer.Character and closestPlayer.Character:FindFirstChild("Head") then
+                args[2] = (closestPlayer.Character.Head.Position - args[1]).Unit * 1000
+            end
+        elseif method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRayWithWhitelist" or method == "FindPartOnRay" then
+            local closestPlayer = getClosestPlayer()
+            if closestPlayer and closestPlayer.Character and closestPlayer.Character:FindFirstChild("Head") then
+                local origin = args[1].Origin
+                args[1] = Ray.new(origin, (closestPlayer.Character.Head.Position - origin).Unit * 1000)
+            end
+        end
+    end
+
+    return oldNamecall(self, unpack(args))
+end)
+
+silentAimButton.MouseButton1Click:Connect(function()
+    silentAimEnabled = not silentAimEnabled
+    if silentAimEnabled then
+        silentAimButton.Text = "Silent Aim: ON"
+        fovCircle.Visible = true
+    else
+        silentAimButton.Text = "Silent Aim: OFF"
+        fovCircle.Visible = false
+    end
+end)
 
 local bodyVelocity
 local bodyGyro
@@ -204,7 +270,11 @@ RunService.Stepped:Connect(function()
     end
 end)
 
-local currentFov = 70
+RunService.RenderStepped:Connect(function()
+    if silentAimEnabled then
+        fovCircle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+    end
+end)
 
 fovButton.MouseButton1Click:Connect(function()
     currentFov += 10
@@ -213,6 +283,9 @@ fovButton.MouseButton1Click:Connect(function()
     end
     camera.FieldOfView = currentFov
     fovButton.Text = "FOV: " .. tostring(currentFov)
+    
+    -- Atualiza o tamanho do FOV Circle do Silent Aim junto com o FOV da câmera
+    fovCircle.Radius = currentFov * 2 
 end)
 
 local function setLoadingState(pvpText, pveText)
@@ -220,6 +293,9 @@ local function setLoadingState(pvpText, pveText)
     pveButton.AutoButtonColor = false
     pvpButton.Text = pvpText
     pveButton.Text = pveText
+    if fovCircle then
+        fovCircle:Remove()
+    end
     screenGui:Destroy()
 end
 
